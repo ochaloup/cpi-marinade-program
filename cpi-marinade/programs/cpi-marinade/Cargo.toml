@@ -17,3 +17,4 @@ default = []
 
 [dependencies]
 anchor-lang = "0.25.0"
+marinade-cpi = "0.3.0"

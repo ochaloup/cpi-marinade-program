@@ -2,7 +2,7 @@
 seeds = false
 skip-lint = false
 [programs.localnet]
-cpi_marinade = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+cpi_marinade = "Em26cSRXE9fxSPNnkHUh8Wmvqh279Jo7StWuCDTCLLSe"
 
 [registry]
 url = "https://api.apr.dev"
