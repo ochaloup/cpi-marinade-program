@@ -1,6 +1,7 @@
 = Marinade CPI calls
 
 This is about to try to call Marinade programs
+from https://github.com/marinade-finance/liquid-staking-program
 
 1) use https://github.com/marinade-finance/marinade-onchain-helper. This requires the anchor in version `0.18.0`.
   It's problematic as it's old version, plus old versions of the Anchor were yanked (see https://github.com/coral-xyz/anchor/issues/1816#issuecomment-1104098755).

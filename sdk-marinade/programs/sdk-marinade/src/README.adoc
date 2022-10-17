@@ -1,0 +1,5 @@
+= Use of Marinade Rust SDK to call CPI
+
+Marinade liquid stake program to call via CPI
+https://github.com/marinade-finance/liquid-staking-program
+with use of https://github.com/marinade-finance/marinade-sdk.

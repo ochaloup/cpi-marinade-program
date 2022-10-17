@@ -1,6 +1,8 @@
 = CPI marinade calling
 
-To call Marinade liquid staking program with IDL generated code
+To call Marinade liquid staking program 
+https://github.com/marinade-finance/liquid-staking-program
+with IDL generated code
 https://docs.rs/marinade-cpi/latest/marinade_cpi/
 
 == Localhost setup
