@@ -3,12 +3,12 @@
 This is about to try to call Marinade programs
 from https://github.com/marinade-finance/liquid-staking-program
 
-1) use https://github.com/marinade-finance/marinade-onchain-helper. This requires the anchor in version `0.18.0`.
+1. use https://github.com/marinade-finance/marinade-onchain-helper. This requires the anchor in version `0.18.0`.
   It's problematic as it's old version, plus old versions of the Anchor were yanked (see https://github.com/coral-xyz/anchor/issues/1816#issuecomment-1104098755).
   The example of how to use that calling is nicely shown in the referral program repository https://github.com/marinade-finance/liquid-staking-referral-program.
   See https://github.com/marinade-finance/liquid-staking-referral-program/blob/b3dd8038aa8f3831b7bb97e9deb5ca0aa06c540c/programs/marinade-referral/src/instructions/deposit_sol.rs#L57
-2) use https://docs.rs/marinade-cpi/. It's automatically generated code from the marinade IDL. The repository of the generator is at
+2. use https://docs.rs/marinade-cpi/. It's automatically generated code from the marinade IDL. The repository of the generator is at
    https://github.com/saber-hq/anchor-gen, the marinade code is generated from https://github.com/saber-hq/anchor-gen/tree/master/examples/marinade-cpi
    Example of usage is at link:./cpi-marinade/[].
-3) use marinade-sdk (`marinade-rust-sdk` as it should be renamed in future) from https://github.com/marinade-finance/marinade-sdk
+3. use marinade-sdk (`marinade-rust-sdk` as it should be renamed in future) from https://github.com/marinade-finance/marinade-sdk
    Example of usage is at link:./sdk-marinade/[].
