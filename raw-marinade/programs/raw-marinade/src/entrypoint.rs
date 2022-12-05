@@ -1,12 +1,15 @@
 //! Program entrypoint definitions
 #![cfg(all(target_os = "solana", not(feature = "no-entrypoint")))]
 
-use anchor_lang::AnchorSerialize;
 use solana_program::{
     msg,
-    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult,
+    borsh::try_from_slice_unchecked,
+    entrypoint, entrypoint::ProgramResult,
     pubkey::Pubkey,
     instruction::{AccountMeta, Instruction},
+    account_info::{next_account_info, AccountInfo},
+    system_program,
+    program::invoke,
 };
 
 entrypoint!(process_instruction);
@@ -31,30 +34,46 @@ fn process_instruction(
     let system_program = next_account_info(account_info_iter)?; // 10
     let token_program = next_account_info(account_info_iter)?; // 11
 
-    let mut accounts = vec![
-        AccountMeta::new(*state, false),
-        AccountMeta::new(*msol_mint, false),
-        AccountMeta::new(*liq_pool_sol_leg_pda, false),
-        AccountMeta::new(*liq_pool_msol_leg, false),
-        AccountMeta::new_readonly(*liq_pool_msol_leg_authority, false),
-        AccountMeta::new(*reserve_pda, false),
-        AccountMeta::new(*transfer_from, true),
-        AccountMeta::new(*mint_to, false),
-        AccountMeta::new_readonly(msol_mint_authority, false),
-        AccountMeta::new_readonly(system_program::id(), false),  // TODO: may I use this or need to pass the system_program from accounts
-        AccountMeta::new_readonly(token_program, false),
+    // see
+    let pub_keys = vec![
+        AccountMeta::new(*state.key, false),
+        AccountMeta::new(*msol_mint.key, false),
+        AccountMeta::new(*liq_pool_sol_leg_pda.key, false),
+        AccountMeta::new(*liq_pool_msol_leg.key, false),
+        AccountMeta::new_readonly(*liq_pool_msol_leg_authority.key, false),
+        AccountMeta::new(*reserve_pda.key, false),
+        AccountMeta::new(*transfer_from.key, true),
+        AccountMeta::new(*mint_to.key, false),
+        AccountMeta::new_readonly(*msol_mint_authority.key, false),
+        AccountMeta::new_readonly(system_program::id(), false),
+        AccountMeta::new_readonly(*token_program.key, false),
     ];
 
     // data we need to know the anchor instruction identifier
     let anchor_sighash_deposit_op: [u8;8] = [242, 35, 198, 137, 82, 225, 242, 182];
-    let lamports: u64 = instruction_data.try_into().unwrap();
+    let lamports: u64 = try_from_slice_unchecked(instruction_data)?;
     let data = [anchor_sighash_deposit_op, lamports.to_le_bytes()].concat();
 
     let ix = Instruction {
-        program_id: *marinade_program.pubkey(),
-        accounts,
+        program_id: *marinade_program.key,
+        accounts: pub_keys,
         data,
     };
+
+    let ais = &[
+        state.clone(),
+        msol_mint.clone(),
+        liq_pool_sol_leg_pda.clone(),
+        liq_pool_msol_leg.clone(),
+        liq_pool_msol_leg_authority.clone(),
+        reserve_pda.clone(),
+        transfer_from.clone(),
+        mint_to.clone(),
+        msol_mint_authority.clone(),
+        system_program.clone(),
+        token_program.clone(),
+    ];
+    invoke(&ix, ais)?;
 
     msg!(">>>>>>>>>>>>>>> OK");
     Ok(())

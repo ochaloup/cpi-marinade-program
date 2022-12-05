@@ -1,0 +1,85 @@
+= Solana RAW instruction calling
+
+To call Marinade liquid staking program
+https://github.com/marinade-finance/liquid-staking-program
+with RAW instruction call.
+
+The raw means to use the `solana_program` SDK without use of the Anchor
+support and its CPI or IDL apis.
+
+The invocation requires the Anchor discriminator which is a `[u8;8]` sized
+and it's at the start of the instruction data passed to the program.
+With that the Anchor may differentiate what function is called at the program.
+
+== How to get information for RAW CPI call to Marinade
+
+To find out how to call the program method with raw txn call
+we need to know what is the discriminator (method identifier).
+The way to do it is to work with the Anchor program
+to compile and extend it.
+
+[source,sh]
+----
+git clone https://github.com/marinade-finance/liquid-staking-program
+cd liquid-staking-program
+
+
+cargo install --git https://github.com/project-serum/anchor avm --locked --force
+
+avm install latest
+avm use latest
+
+anchor expand
+
+cat .anchor/expanded-macros/marinade-finance/marinade-finance-*.rs
+# search for string 'match sighash {'
+
+cat .anchor/expanded-macros/marinade-finance/marinade-finance-*.rs |\
+  grep -B 1 '__private::__global::deposit('
+----
+
+== How to get Marinade IDL json and typescript
+
+=== IDL json and typescriptts
+
+
+If we want to get the Anchor IDL (`./target/idl`) for Marinade `liquid-staking-program`
+then only version `0.18.0` and lower works.
+
+[source,sh]
+----
+# to cloned Marinade anchor project
+cd liquid-staking-program/
+
+avm install 0.18.0
+avm use 0.18.0
+anchor --version
+
+# if the version is the latest one then we can call the anchor directly where it's installed
+~/.avm/bin/anchor-0.18.0 --version
+
+~/.avm/bin/anchor-0.18.0 build
+----
+
+With that we built the Marinade `liquid-staking-program` project and got generated
+`.so` files under `liquid-staking-program/target/deploy`
+and we get the `idl` under `liquid-staking-program/target/idl`
+and the typescript `ts` under `liquid-staking-program/target/types`.
+
+The output of generation is under `./types` folder of this project.
+
+=== IDL typescript ts
+
+To get solely the typescript types of the instructions and accounts could be generated from the Anchor sources
+via command `anchor idl parse`.
+
+The output of command is under `./types` folder.
+
+
+[source,sh]
+----
+# to cloned Marinade anchor project
+cd liquid-staking-program/
+
+anchor idl parse -f programs/marinade-finance/src/lib.rs -t idl/marinade_finance.ts
+----
