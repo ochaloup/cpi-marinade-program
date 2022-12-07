@@ -6,6 +6,7 @@ import {
   createMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
+  ACCOUNT_SIZE
 } from "@solana/spl-token"
 import { MarinadeFinance } from "../idl/marinade_finance";
 import {
@@ -18,6 +19,8 @@ import {
 } from "@solana/web3.js"
 import path from "path"
 import { readFile } from "fs/promises"
+import { encode } from '@project-serum/anchor/dist/cjs/utils/bytes/utf8';
+
 
 const MARINADE_FINANCE_JSON_PATH = "../idl/marinade_finance.json"
 
@@ -87,23 +90,21 @@ describe("raw-marinade", () => {
     const {blockhash, lastValidBlockHeight} = await anchor.getProvider().connection.getLatestBlockhash()
 
     const creatorAuthority = Keypair.generate()
-    const marinadeStateAccount = Keypair.generate()  // as state instance
+    const marinadeState = Keypair.generate()  // as state instance
     const adminAuthority = wallet.publicKey // payer is the admin authority
-    const operationalSolAccount = wallet.publicKey // payer is the operational sol account
+    const operationalSol = wallet.publicKey // payer is the operational sol account
     const validatorManagerAuthority = adminAuthority  // validator authority is the admin authority
 
     const STAKE_LIST_SEED: string = "stake_list"
-
-
     const maxStakeAccounts = 1000
     const stakeRecordSize = 32 + 8 + 8 + 1 // from marinade-anchor/programs/marinade-finance/src/stake_systems.rs::StakeRecord
     const stakeListAccountSize = maxStakeAccounts * stakeRecordSize + 8  // adding discriminator space
-    const stakeListAddress = await PublicKey.createWithSeed(marinadeStateAccount.publicKey, STAKE_LIST_SEED, MARINADE_PROGRAM_ID)
+    const stakeListAddress = await PublicKey.createWithSeed(marinadeState.publicKey, STAKE_LIST_SEED, MARINADE_PROGRAM_ID)
     const rentStakeListAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(stakeListAccountSize)
     const ixCreateStakeListAccount = SystemProgram.createAccountWithSeed({
       fromPubkey: wallet.publicKey,
       newAccountPubkey: stakeListAddress,
-      basePubkey: marinadeStateAccount.publicKey,
+      basePubkey: marinadeState.publicKey,
       seed: STAKE_LIST_SEED,
       lamports: rentStakeListAccount,
       space: stakeListAccountSize, // adding discriminator space
@@ -115,9 +116,54 @@ describe("raw-marinade", () => {
       lastValidBlockHeight,
     })
     txCreateStakeListAccount.add(ixCreateStakeListAccount)
-    await anchor.getProvider().sendAndConfirm(txCreateStakeListAccount, [wallet, marinadeStateAccount])
+    await anchor.getProvider().sendAndConfirm(txCreateStakeListAccount, [wallet, marinadeState])
     console.log("created stakeListAddress", stakeListAddress.toBase58(), "rent", rentStakeListAccount)
 
+    const VALIDATOR_LIST_SEED: string = "validator_list"
+    const validatorListAddress = await PublicKey.createWithSeed(marinadeState.publicKey, VALIDATOR_LIST_SEED, MARINADE_PROGRAM_ID)
+    const maxValidatorAccounts = 1000
+    const validatorRecordSize = 32 + 8 + 4 + 8 + 1 // from marinade-anchor/programs/marinade-finance/src/validator_systems.rs::ValidatorRecord
+    const validatorListAccountSize = maxValidatorAccounts * validatorRecordSize + 8  // adding discriminator space
+    const rentValidatorListAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(validatorListAccountSize)
+    const ixCreateValidatorListAccount = SystemProgram.createAccountWithSeed({
+      fromPubkey: wallet.publicKey,
+      newAccountPubkey: validatorListAddress,
+      basePubkey: marinadeState.publicKey,
+      seed: VALIDATOR_LIST_SEED,
+      lamports: rentValidatorListAccount,
+      space: validatorListAccountSize, // adding discriminator space
+      programId: MARINADE_PROGRAM_ID // owner
+    })
+    const txCreateValidatorListAccount = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txCreateValidatorListAccount.add(ixCreateValidatorListAccount)
+    await anchor.getProvider().sendAndConfirm(txCreateValidatorListAccount, [wallet, marinadeState])
+    console.log("created validatorListAddress", validatorListAddress.toBase58(), "rent", rentValidatorListAccount)
+
+    const feeReward = 2
+
+    // init reserve address
+    const RESERVE_SEED: string = "reserve"
+    const [reserveAddress, reserveBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(RESERVE_SEED)], MARINADE_PROGRAM_ID)
+    const rentSplStateAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(ACCOUNT_SIZE)
+    const ixTransferToReserve = SystemProgram.transfer({
+      fromPubkey: wallet.publicKey,
+      toPubkey: reserveAddress,
+      lamports:rentSplStateAccount,
+      seed: RESERVE_SEED,
+      programId: MARINADE_PROGRAM_ID,
+    })
+    const txTransferToReserve = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txTransferToReserve.add(ixTransferToReserve)
+    await anchor.getProvider().sendAndConfirm(txTransferToReserve, [wallet])
+    console.log("funded reserve address", reserveAddress, "with lamports", rentSplStateAccount)
 
     // Init instruction definition
     // https://github.com/marinade-finance/liquid-staking-program/blob/447f9607a8c755cac7ad63223febf047142c6c8f/programs/marinade-finance/src/lib.rs#L343
