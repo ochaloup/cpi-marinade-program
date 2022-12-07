@@ -6,7 +6,9 @@ import {
   createMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
-  ACCOUNT_SIZE
+  ACCOUNT_SIZE as SPL_ACCOUNT_SIZE,
+  TOKEN_PROGRAM_ID,
+  createAccount
 } from "@solana/spl-token"
 import { MarinadeFinance } from "../idl/marinade_finance";
 import {
@@ -44,15 +46,17 @@ describe("raw-marinade", () => {
     connection: Connection,
     wallet: Signer,
     amount: number = 0,
-    decimals: number = 0,
+    decimals: number = 9,
+    mintAuthority: PublicKey | Signer = wallet
   ): Promise<[PublicKey, PublicKey]> {
     const mint = await createMint(
       connection,
       wallet, // Fees payer
-      wallet.publicKey, // Minting control
+      mintAuthority instanceof PublicKey ? mintAuthority : mintAuthority.publicKey, // Minting control
       wallet.publicKey, // Freeze mint control
       decimals // Decimal place location
     )
+    console.log("mint", mint.toBase58())
     const ata = await getOrCreateAssociatedTokenAccount(
       connection,
       wallet, // Fees payer
@@ -65,7 +69,7 @@ describe("raw-marinade", () => {
         wallet, // Fees payer
         mint, // Mint of the minting
         ata.address, // Mint to address
-        wallet, // Minting authority
+        mintAuthority, // Minting authority
         amount, // Amount to be minted
       )
     }
@@ -84,8 +88,6 @@ describe("raw-marinade", () => {
 
   it("Deposit call over raw Solana CPI", async () => {
     const wallet: Keypair = ((anchor.getProvider() as AnchorProvider).wallet as NodeWallet).payer
-    const [msolMint, ataAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 10)
-    console.log("msol mint", msolMint.toBase58(), "ata address", ataAddress.toBase58())
 
     const {blockhash, lastValidBlockHeight} = await anchor.getProvider().connection.getLatestBlockhash()
 
@@ -94,6 +96,13 @@ describe("raw-marinade", () => {
     const adminAuthority = wallet.publicKey // payer is the admin authority
     const operationalSol = wallet.publicKey // payer is the operational sol account
     const validatorManagerAuthority = adminAuthority  // validator authority is the admin authority
+
+    const MSOL_MINT_AUTHORITY_SEED: string = "st_mint"
+    const [msolMintAuthorityAddress, msolMintAuthorityBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(MSOL_MINT_AUTHORITY_SEED)], MARINADE_PROGRAM_ID)
+    console.log("msolMintAuthorityAddress", msolMintAuthorityAddress.toBase58())
+    const [msolMint, msolAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, msolMintAuthorityAddress)
+    console.log("msol mint", msolMint.toBase58(), "msol ata address", msolAtaAddress.toBase58())
+
 
     const STAKE_LIST_SEED: string = "stake_list"
     const maxStakeAccounts = 1000
@@ -131,7 +140,7 @@ describe("raw-marinade", () => {
       basePubkey: marinadeState.publicKey,
       seed: VALIDATOR_LIST_SEED,
       lamports: rentValidatorListAccount,
-      space: validatorListAccountSize, // adding discriminator space
+      space: validatorListAccountSize,
       programId: MARINADE_PROGRAM_ID // owner
     })
     const txCreateValidatorListAccount = new Transaction({
@@ -144,11 +153,11 @@ describe("raw-marinade", () => {
     console.log("created validatorListAddress", validatorListAddress.toBase58(), "rent", rentValidatorListAccount)
 
     const feeReward = 2
+    const rentSplStateAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(SPL_ACCOUNT_SIZE)
 
     // init reserve address
     const RESERVE_SEED: string = "reserve"
     const [reserveAddress, reserveBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(RESERVE_SEED)], MARINADE_PROGRAM_ID)
-    const rentSplStateAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(ACCOUNT_SIZE)
     const ixTransferToReserve = SystemProgram.transfer({
       fromPubkey: wallet.publicKey,
       toPubkey: reserveAddress,
@@ -163,7 +172,54 @@ describe("raw-marinade", () => {
     })
     txTransferToReserve.add(ixTransferToReserve)
     await anchor.getProvider().sendAndConfirm(txTransferToReserve, [wallet])
-    console.log("funded reserve address", reserveAddress, "with lamports", rentSplStateAccount)
+    console.log("funded reserve address", reserveAddress.toBase58(), "with lamports", rentSplStateAccount)
+
+    // init lpMint
+    const LP_MINT_AUTHORITY_SEED: string = "liq_mint";
+    const [lpMintAuthorityAddress, lpMintAuthorityBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(LP_MINT_AUTHORITY_SEED)], MARINADE_PROGRAM_ID)
+    const [lpMint, lpAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, lpMintAuthorityAddress)
+    console.log("lp mint", lpMint.toBase58(), "lp ata address", lpAtaAddress.toBase58())
+    
+    // Liq pool SOL leg
+    const SOL_LEG_SEED: string = "liq_sol"
+    const [solLegAddress, lsolLegBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(SOL_LEG_SEED)], MARINADE_PROGRAM_ID)
+    const ixTransferToSolLeg = SystemProgram.transfer({
+      fromPubkey: wallet.publicKey,
+      toPubkey: solLegAddress,
+      lamports:rentSplStateAccount,
+      seed: SOL_LEG_SEED,
+      programId: MARINADE_PROGRAM_ID,
+    })
+    const txTransferToSolLeg = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txTransferToSolLeg.add(ixTransferToSolLeg)
+    await anchor.getProvider().sendAndConfirm(txTransferToSolLeg, [wallet])
+    console.log("funded sol leg address", solLegAddress.toBase58(), "with lamports", rentSplStateAccount)
+
+    // Liq pool mSOL leg
+    const MSOL_LEG_SEED: string = "liq_st_sol"
+    const msolLegAddress = await PublicKey.createWithSeed(marinadeState.publicKey, MSOL_LEG_SEED, TOKEN_PROGRAM_ID)
+    const ixCreateLiqPoolMsolLegAccount = SystemProgram.createAccountWithSeed({
+      fromPubkey: wallet.publicKey,
+      newAccountPubkey: msolLegAddress,
+      basePubkey: marinadeState.publicKey,
+      seed: MSOL_LEG_SEED,
+      lamports: rentSplStateAccount,
+      space: SPL_ACCOUNT_SIZE,
+      programId: TOKEN_PROGRAM_ID // owner
+    })
+    const txCreateLiqPoolMsolLegAccount = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txCreateLiqPoolMsolLegAccount.add(ixCreateLiqPoolMsolLegAccount)
+    await anchor.getProvider().sendAndConfirm(txCreateLiqPoolMsolLegAccount, [wallet, marinadeState])
+    console.log("created msolLegAddress", msolLegAddress.toBase58(), "rent", rentSplStateAccount)
+
 
     // Init instruction definition
     // https://github.com/marinade-finance/liquid-staking-program/blob/447f9607a8c755cac7ad63223febf047142c6c8f/programs/marinade-finance/src/lib.rs#L343
