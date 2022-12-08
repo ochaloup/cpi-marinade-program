@@ -8,7 +8,6 @@ import {
   mintTo,
   ACCOUNT_SIZE as SPL_ACCOUNT_SIZE,
   TOKEN_PROGRAM_ID,
-  createAccount
 } from "@solana/spl-token"
 import { MarinadeFinance } from "../idl/marinade_finance";
 import {
@@ -18,10 +17,16 @@ import {
   Connection,
   SystemProgram,
   Transaction,
+  LAMPORTS_PER_SOL,
+  SYSVAR_CLOCK_PUBKEY,
+  SYSVAR_RENT_PUBKEY,
 } from "@solana/web3.js"
 import path from "path"
 import { readFile } from "fs/promises"
+import {homedir} from "os"
 import { encode } from '@project-serum/anchor/dist/cjs/utils/bytes/utf8';
+import { BN } from "bn.js"
+import { expect } from "chai"
 
 
 const MARINADE_FINANCE_JSON_PATH = "../idl/marinade_finance.json"
@@ -33,7 +38,7 @@ const MARINADE_PROGRAM_ID = new PublicKey("MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJ
 describe("raw-marinade", () => {
   let marinadeFinance: Program<MarinadeFinance>
 
-    /**
+  /**
    * Create a mint for a test token where wallet is in control over the mint.
    * Plus, minting some amount of tokens to wallet ATA.
    *
@@ -76,9 +81,29 @@ describe("raw-marinade", () => {
     return [mint, ata.address]
   }
 
+  async function loadKeyPair(keyPairPath: string): Promise<Keypair> {
+    // const keyPairPath = homedir() + "/marinade/marinade-anchor/keys/creator.json"
+    // console.log(keyPairPath)
+    const loadedKeyPair = await readFile(keyPairPath)
+    const loadedKeyPairJson = JSON.parse(loadedKeyPair.toString())
+    const walletKeyPair = Keypair.fromSecretKey(Uint8Array.from(loadedKeyPairJson))
+    console.debug("loaded pubkey of keypair", walletKeyPair.publicKey.toBase58())
+    return walletKeyPair
+  }
+
+  async function printTxLogs(txSignature: string) {
+    const confirmedLocalConnection =  anchor.AnchorProvider.local(undefined, {commitment: "confirmed"}).connection;
+    while (!(await confirmedLocalConnection.getTransaction(txSignature))) {
+      console.log("waiting one second to get logs of", txSignature)
+      await new Promise(f => setTimeout(f, 1000));
+    }
+    console.log("log", (await confirmedLocalConnection.getTransaction(txSignature)).meta.logMessages)
+  }
+
   before(async function() {
    // Configure the client to use the local cluster.
-    anchor.setProvider(anchor.AnchorProvider.env());
+    anchor.setProvider(anchor.AnchorProvider.env()); // maybe it should be local()
+    (anchor.getProvider() as AnchorProvider).opts.skipPreflight = true
 
     const idlPath = path.join(__dirname, MARINADE_FINANCE_JSON_PATH)
     const idlFile = await readFile(idlPath, "utf8")
@@ -91,7 +116,15 @@ describe("raw-marinade", () => {
 
     const {blockhash, lastValidBlockHeight} = await anchor.getProvider().connection.getLatestBlockhash()
 
-    const creatorAuthority = Keypair.generate()
+    const creatorAuthority = new PublicKey([
+      130, 33, 92, 198, 248, 0, 48, 210, 221, 172, 150, 104, 107, 227, 44, 217, 3, 61, 74, 58,
+      179, 76, 35, 104, 39, 67, 130, 92, 93, 25, 180, 107,
+    ]) // 9kyWPBeU9RnjxnWkkYKYVeShAwQgPDmxujr77thREZtN
+    // load creator authority keypair
+    const keyPairPath = homedir() + "/marinade/marinade-anchor/keys/creator.json"
+    const creatorAuthorityKeyPair = await loadKeyPair(keyPairPath)
+    expect(creatorAuthority.equals(creatorAuthorityKeyPair.publicKey))
+
     const marinadeState = Keypair.generate()  // as state instance
     const adminAuthority = wallet.publicKey // payer is the admin authority
     const operationalSol = wallet.publicKey // payer is the operational sol account
@@ -107,7 +140,8 @@ describe("raw-marinade", () => {
     const STAKE_LIST_SEED: string = "stake_list"
     const maxStakeAccounts = 1000
     const stakeRecordSize = 32 + 8 + 8 + 1 // from marinade-anchor/programs/marinade-finance/src/stake_systems.rs::StakeRecord
-    const stakeListAccountSize = maxStakeAccounts * stakeRecordSize + 8  // adding discriminator space
+    const additionalStakeRecordSpace = 8
+    const stakeListAccountSize = maxStakeAccounts * stakeRecordSize + additionalStakeRecordSpace  // adding discriminator space
     const stakeListAddress = await PublicKey.createWithSeed(marinadeState.publicKey, STAKE_LIST_SEED, MARINADE_PROGRAM_ID)
     const rentStakeListAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(stakeListAccountSize)
     const ixCreateStakeListAccount = SystemProgram.createAccountWithSeed({
@@ -132,7 +166,8 @@ describe("raw-marinade", () => {
     const validatorListAddress = await PublicKey.createWithSeed(marinadeState.publicKey, VALIDATOR_LIST_SEED, MARINADE_PROGRAM_ID)
     const maxValidatorAccounts = 1000
     const validatorRecordSize = 32 + 8 + 4 + 8 + 1 // from marinade-anchor/programs/marinade-finance/src/validator_systems.rs::ValidatorRecord
-    const validatorListAccountSize = maxValidatorAccounts * validatorRecordSize + 8  // adding discriminator space
+    const additionalValidatorRecordSpace = 8
+    const validatorListAccountSize = maxValidatorAccounts * validatorRecordSize + additionalValidatorRecordSpace  // adding discriminator space
     const rentValidatorListAccount = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(validatorListAccountSize)
     const ixCreateValidatorListAccount = SystemProgram.createAccountWithSeed({
       fromPubkey: wallet.publicKey,
@@ -220,11 +255,87 @@ describe("raw-marinade", () => {
     await anchor.getProvider().sendAndConfirm(txCreateLiqPoolMsolLegAccount, [wallet, marinadeState])
     console.log("created msolLegAddress", msolLegAddress.toBase58(), "rent", rentSplStateAccount)
 
+    // treasury mSOL account
+    const treasuryMsolAuthority = wallet.publicKey
+    const treasuryMsolAddress = msolAtaAddress
+
+    const slotsForStakeDelta = 18000
+
+    // calculated just quickly without a precision
+    const marinadeStateAccountSize = 2048 + 2000 // 2048 default in marmin-init, not sure if it's ok
+    const rentMarinadeState = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(marinadeStateAccountSize)
+    const ixInitMarinadeState = SystemProgram.createAccount({
+      fromPubkey: wallet.publicKey,
+      newAccountPubkey: marinadeState.publicKey,
+      lamports: rentMarinadeState,
+      space: marinadeStateAccountSize,
+      programId: MARINADE_PROGRAM_ID
+    })
+    const txInitMarinadeState = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txInitMarinadeState.add(ixInitMarinadeState)
+    // TODO: the commitment setup for sendAndConfirm probably does not work and it works only on default configuraiton of the connection, when calling printTxLog it will need to wait pretty long
+    await anchor.getProvider().sendAndConfirm(txInitMarinadeState, [wallet, marinadeState], {preflightCommitment: "confirmed", commitment: "confirmed"})
+    console.log("initialized marinade state account", marinadeState.publicKey.toBase58())
 
     // Init instruction definition
     // https://github.com/marinade-finance/liquid-staking-program/blob/447f9607a8c755cac7ad63223febf047142c6c8f/programs/marinade-finance/src/lib.rs#L343
     // Admin CLI
     // https://github.com/marinade-finance/marinade-anchor/blob/b894dbb4605417adc17e32abfb21b62459255688/cli/admin-init/src/init.rs#L68
-    // const tx = await marinadeFinance.methods.initialize().accounts({}).rpc()
-  });
-});
+    try {
+      let txSig = await marinadeFinance.methods
+      // @ts-expect-error
+      .initialize({
+        adminAuthority,
+        validatorManagerAuthority,
+        minStake: new BN(LAMPORTS_PER_SOL),
+        rewardFee: {
+          basisPoints: feeReward
+        },
+        additionalStakeRecordSpace,
+        additionalValidatorRecordSpace,
+        slotsForStakeDelta: new BN(slotsForStakeDelta),
+        liqPool: { // defaults from mardmin-init / marinade-anchor
+          lpLiquidityTarget: new BN(10_000 * LAMPORTS_PER_SOL),
+          pubLpMaxFee: {
+            basisPoints: 300
+          },
+          lpMinFee: {
+            basisPoints: 30
+          },
+          lpTreasuryCut: {
+            basisPoints: 2500
+          },
+        }
+      })
+      .accounts({
+        creatorAuthority,
+        state: marinadeState.publicKey,
+        reservePda: reserveAddress,
+        stakeList: stakeListAddress,
+        validatorList: validatorListAddress,
+        msolMint,
+        operationalSolAccount: operationalSol,
+        treasuryMsolAccount:  treasuryMsolAddress,
+        liqPool: {
+          lpMint: lpMint,
+          solLegPda: solLegAddress,
+          msolLeg: msolLegAddress,
+        },
+        clock: SYSVAR_CLOCK_PUBKEY,
+        rent: SYSVAR_RENT_PUBKEY
+      })
+      .signers([wallet, creatorAuthorityKeyPair])
+      .rpc()
+      printTxLogs(txSig)
+    } catch (e) {
+      const txsig = (e as Error).message.replace('Raw transaction ', '').split(' ')[0]
+      console.log((e as Error).message)
+      printTxLogs(txsig)
+    }
+  })
+
+})
