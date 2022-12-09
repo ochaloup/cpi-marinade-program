@@ -81,5 +81,5 @@ The output of command is under `./types` folder.
 # to cloned Marinade anchor project
 cd liquid-staking-program/
 
-anchor idl parse -f programs/marinade-finance/src/lib.rs -t idl/marinade_finance.ts
+anchor idl parse -f programs/marinade-finance/src/lib.rs -t target/idl/marinade_finance.ts
 ----

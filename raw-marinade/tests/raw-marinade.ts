@@ -8,6 +8,8 @@ import {
   mintTo,
   ACCOUNT_SIZE as SPL_ACCOUNT_SIZE,
   TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccount,
+  createInitializeAccount2Instruction,
 } from "@solana/spl-token"
 import { MarinadeFinance } from "../idl/marinade_finance";
 import {
@@ -52,13 +54,14 @@ describe("raw-marinade", () => {
     wallet: Signer,
     amount: number = 0,
     decimals: number = 9,
-    mintAuthority: PublicKey | Signer = wallet
+    mintAuthority: PublicKey | Signer = wallet,
+    freezeAuthority: PublicKey | null = wallet.publicKey
   ): Promise<[PublicKey, PublicKey]> {
     const mint = await createMint(
       connection,
       wallet, // Fees payer
       mintAuthority instanceof PublicKey ? mintAuthority : mintAuthority.publicKey, // Minting control
-      wallet.publicKey, // Freeze mint control
+      freezeAuthority, // Freeze mint control
       decimals // Decimal place location
     )
     console.log("mint", mint.toBase58())
@@ -100,6 +103,22 @@ describe("raw-marinade", () => {
     console.log("log", (await confirmedLocalConnection.getTransaction(txSignature)).meta.logMessages)
   }
 
+  async function checkAccountInfo(accounts: Object, printDelimiter="") {
+    for (const [name, account] of Object.entries(accounts)) {
+      if (typeof account.toBase58 !== 'function' && !!Object.keys(Object(account)).length) {
+        console.log(printDelimiter + "Inner iterable structure in", name)
+        await checkAccountInfo(account, printDelimiter + " >> ")
+      } else {
+        const ai = await anchor.getProvider().connection.getAccountInfo(account as PublicKey)
+        if (ai) {
+          console.log(printDelimiter + "name", name, (account as PublicKey).toBase58(), "lamports", ai.lamports, "data length", ai.data.length)
+        } else {
+          console.log(printDelimiter + "non initialized account: name", name, (account as PublicKey).toBase58())
+        }
+      }
+    }
+  }
+
   before(async function() {
    // Configure the client to use the local cluster.
     anchor.setProvider(anchor.AnchorProvider.env()); // maybe it should be local()
@@ -133,8 +152,23 @@ describe("raw-marinade", () => {
     const MSOL_MINT_AUTHORITY_SEED: string = "st_mint"
     const [msolMintAuthorityAddress, msolMintAuthorityBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(MSOL_MINT_AUTHORITY_SEED)], MARINADE_PROGRAM_ID)
     console.log("msolMintAuthorityAddress", msolMintAuthorityAddress.toBase58())
-    const [msolMint, msolAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, msolMintAuthorityAddress)
+    const [msolMint, msolAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, msolMintAuthorityAddress, null)
     console.log("msol mint", msolMint.toBase58(), "msol ata address", msolAtaAddress.toBase58())
+
+    const baseRent = await anchor.getProvider().connection.getMinimumBalanceForRentExemption(0)
+    const ixTransferCreatorAuthority = SystemProgram.transfer({
+      fromPubkey: wallet.publicKey,
+      toPubkey: creatorAuthority,
+      lamports:baseRent,
+    })
+    const txTransferCreatorAuthority = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txTransferCreatorAuthority.add(ixTransferCreatorAuthority)
+    await anchor.getProvider().sendAndConfirm(txTransferCreatorAuthority, [wallet])
+    console.log("funded reserve address", creatorAuthority.toBase58(), "with lamports", baseRent)
 
 
     const STAKE_LIST_SEED: string = "stake_list"
@@ -212,7 +246,7 @@ describe("raw-marinade", () => {
     // init lpMint
     const LP_MINT_AUTHORITY_SEED: string = "liq_mint";
     const [lpMintAuthorityAddress, lpMintAuthorityBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(LP_MINT_AUTHORITY_SEED)], MARINADE_PROGRAM_ID)
-    const [lpMint, lpAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, lpMintAuthorityAddress)
+    const [lpMint, lpAtaAddress] = await createMintWithATA(anchor.getProvider().connection, wallet, 0, 9, lpMintAuthorityAddress, null)
     console.log("lp mint", lpMint.toBase58(), "lp ata address", lpAtaAddress.toBase58())
     
     // Liq pool SOL leg
@@ -253,7 +287,21 @@ describe("raw-marinade", () => {
     })
     txCreateLiqPoolMsolLegAccount.add(ixCreateLiqPoolMsolLegAccount)
     await anchor.getProvider().sendAndConfirm(txCreateLiqPoolMsolLegAccount, [wallet, marinadeState])
-    console.log("created msolLegAddress", msolLegAddress.toBase58(), "rent", rentSplStateAccount)
+    const MSOL_LEG_AUTHORITY_SEED: string = "liq_st_sol_authority"
+    const [msolLegAuthorityAddress, msolLegAuthorityBump] = await PublicKey.findProgramAddress([marinadeState.publicKey.toBytes(), encode(MSOL_LEG_AUTHORITY_SEED)], MARINADE_PROGRAM_ID)
+    const ixInitializeLiqPoolMsolLegAccount = createInitializeAccount2Instruction(
+      msolLegAddress,
+      msolMint,
+      msolLegAuthorityAddress
+    )
+    const txInitializeLiqPoolMsolLegAccount = new Transaction({
+      feePayer: wallet.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    })
+    txInitializeLiqPoolMsolLegAccount.add(ixInitializeLiqPoolMsolLegAccount)
+    await anchor.getProvider().sendAndConfirm(txInitializeLiqPoolMsolLegAccount, [wallet])
+    console.log("created msolLegAddress and initialized as token account", msolLegAddress.toBase58(), "rent", rentSplStateAccount)
 
     // treasury mSOL account
     const treasuryMsolAuthority = wallet.publicKey
@@ -280,6 +328,26 @@ describe("raw-marinade", () => {
     // TODO: the commitment setup for sendAndConfirm probably does not work and it works only on default configuraiton of the connection, when calling printTxLog it will need to wait pretty long
     await anchor.getProvider().sendAndConfirm(txInitMarinadeState, [wallet, marinadeState], {preflightCommitment: "confirmed", commitment: "confirmed"})
     console.log("initialized marinade state account", marinadeState.publicKey.toBase58())
+
+    const accountsToOperate = 
+    {
+      creatorAuthority,
+      state: marinadeState.publicKey,
+      reservePda: reserveAddress,
+      stakeList: stakeListAddress,
+      validatorList: validatorListAddress,
+      msolMint,
+      operationalSolAccount: operationalSol,
+      treasuryMsolAccount:  treasuryMsolAddress,
+      liqPool: {
+        lpMint: lpMint,
+        solLegPda: solLegAddress,
+        msolLeg: msolLegAddress,
+      },
+      clock: SYSVAR_CLOCK_PUBKEY,
+      rent: SYSVAR_RENT_PUBKEY
+    }
+    await checkAccountInfo(accountsToOperate)
 
     // Init instruction definition
     // https://github.com/marinade-finance/liquid-staking-program/blob/447f9607a8c755cac7ad63223febf047142c6c8f/programs/marinade-finance/src/lib.rs#L343
@@ -311,23 +379,7 @@ describe("raw-marinade", () => {
           },
         }
       })
-      .accounts({
-        creatorAuthority,
-        state: marinadeState.publicKey,
-        reservePda: reserveAddress,
-        stakeList: stakeListAddress,
-        validatorList: validatorListAddress,
-        msolMint,
-        operationalSolAccount: operationalSol,
-        treasuryMsolAccount:  treasuryMsolAddress,
-        liqPool: {
-          lpMint: lpMint,
-          solLegPda: solLegAddress,
-          msolLeg: msolLegAddress,
-        },
-        clock: SYSVAR_CLOCK_PUBKEY,
-        rent: SYSVAR_RENT_PUBKEY
-      })
+      .accounts(accountsToOperate)
       .signers([wallet, creatorAuthorityKeyPair])
       .rpc()
       printTxLogs(txSig)
